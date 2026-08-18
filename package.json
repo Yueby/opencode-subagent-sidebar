@@ -1,0 +1,58 @@
+{
+  "name": "@yueby/opencode-subagent-sidebar",
+  "version": "0.1.0",
+  "description": "OpenCode TUI plugin for viewing direct child sessions",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "tui",
+    "subagent",
+    "sidebar"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Yueby/opencode-subagent-sidebar.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Yueby/opencode-subagent-sidebar/issues"
+  },
+  "homepage": "https://github.com/Yueby/opencode-subagent-sidebar",
+  "type": "module",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./tui": {
+      "import": "./dist/tui.js",
+      "types": "./dist/tui.d.ts"
+    }
+  },
+  "oc-plugin": ["tui"],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "bun scripts/build.ts",
+    "prepack": "bun run build",
+    "test": "bun test"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org",
+    "access": "public"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "1.18.18",
+    "@opencode-ai/sdk": "1.18.18",
+    "@opentui/solid": "0.4.5",
+    "solid-js": "1.9.12"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "5.8.2"
+  }
+}
