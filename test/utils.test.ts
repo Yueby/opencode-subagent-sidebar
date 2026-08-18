@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Session } from "@opencode-ai/sdk/v2";
-import { directChildren, durationForSession, formatDuration, formatTaskTitle, getContrastForeground, getStatusDotColor, getStatusLabel, isActiveSessionStatus } from "../src/ui/utils.js";
+import { directChildren, durationForSession, formatDuration, formatTaskTitle, getContrastForeground, getStatusDotColor, getStatusLabel, isActiveSessionStatus, taskTimingForTitle } from "../src/ui/utils.js";
 
 const session = (id: string, parentID?: string): Pick<Session, "id" | "parentID"> => ({ id, parentID });
 
@@ -14,6 +14,42 @@ describe("subagent helpers", () => {
     expect(durationForSession(value, "busy", 6_000)).toBe(5_000);
     expect(durationForSession(value, "retry", 6_000)).toBe(5_000);
     expect(durationForSession(value, "idle", 6_000)).toBe(1_000);
+  });
+
+  describe("taskTimingForTitle", () => {
+    test("uses creation time for a newly observed active child", () => {
+      expect(taskTimingForTitle(undefined, "First task", "busy", 1_000, 6_000)).toEqual({
+        title: "First task",
+        startTime: 1_000,
+      });
+    });
+
+    test("resets when an active child's normalized title changes", () => {
+      expect(taskTimingForTitle({ title: "First task", startTime: 1_000 }, "Second task", "busy", 1_000, 6_000)).toEqual({
+        title: "Second task",
+        startTime: 6_000,
+      });
+    });
+
+    test("does not reset for unchanged active status or inactive title updates", () => {
+      const previous = { title: "First task", startTime: 1_000 };
+      expect(taskTimingForTitle(previous, "First task", "retry", 1_000, 6_000)).toEqual(previous);
+      expect(taskTimingForTitle(previous, "Second task", "idle", 1_000, 6_000)).toEqual(previous);
+    });
+
+    test("resets when a title changes while idle and the child later becomes active", () => {
+      const previous = { title: "First task", startTime: 1_000 };
+      const whileIdle = taskTimingForTitle(previous, "Second task", "idle", 1_000, 4_000);
+      expect(taskTimingForTitle(whileIdle, "Second task", "busy", 1_000, 6_000)).toEqual({
+        title: "Second task",
+        startTime: 6_000,
+      });
+    });
+
+    test("compares normalized display titles rather than subagent markers", () => {
+      const previous = { title: formatTaskTitle("First task (@one subagent)"), startTime: 1_000 };
+      expect(taskTimingForTitle(previous, formatTaskTitle("First task (@two subagent)"), "busy", 1_000, 6_000)).toEqual(previous);
+    });
   });
 
   test("includes only busy and retry sessions as active", () => {

@@ -95,6 +95,27 @@ export function durationForSession(
   return Math.max(0, (isActiveSessionStatus(status) ? now : updated) - created);
 }
 
+export interface TaskTiming {
+  title: string;
+  startTime: number;
+}
+
+export function taskTimingForTitle(
+  previous: TaskTiming | undefined,
+  title: string,
+  status: SessionStatus["type"] | undefined,
+  createdTime: number,
+  now: number,
+): TaskTiming {
+  if (!previous) {
+    return { title, startTime: createdTime };
+  }
+  if (previous.title !== title) {
+    return isActiveSessionStatus(status) ? { title, startTime: now } : previous;
+  }
+  return previous;
+}
+
 export function isActiveSessionStatus(status: SessionStatus["type"] | undefined): boolean {
   return status === "busy" || status === "retry";
 }

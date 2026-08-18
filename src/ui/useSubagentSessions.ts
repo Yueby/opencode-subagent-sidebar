@@ -2,16 +2,23 @@ import { createEffect, createMemo, createSignal, onCleanup, onMount } from "soli
 import type { Session, SessionStatus } from "@opencode-ai/sdk/v2";
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui";
 import type { SubagentItemData } from "./types.js";
-import { durationForSession, isActiveSessionStatus } from "./utils.js";
+import { directChildren, durationForSession, formatTaskTitle, isActiveSessionStatus, taskTimingForTitle } from "./utils.js";
 
 export function useSubagentSessions(api: TuiPluginApi, parentSessionId: () => string) {
   const [sessions, setSessions] = createSignal<Session[]>([]);
   const [statuses, setStatuses] = createSignal(new Map<string, SessionStatus>());
   const [now, setNow] = createSignal(Date.now());
+  const taskTimings = new Map<string, { title: string; startTime: number }>();
   let refreshGeneration = 0;
 
   const applyStatus = (sessionID: string, status: SessionStatus) => {
     setStatuses((current) => new Map(current).set(sessionID, status));
+  };
+
+  const isCurrentDirectChild = (sessionID: string, eventParentID?: string) => {
+    const parentID = parentSessionId();
+    if (!parentID) return false;
+    return eventParentID === parentID || sessions().some((session) => session.id === sessionID && session.parentID === parentID);
   };
 
   const refresh = async () => {
@@ -19,6 +26,8 @@ export function useSubagentSessions(api: TuiPluginApi, parentSessionId: () => st
     const generation = ++refreshGeneration;
     if (!parentID) {
       setSessions([]);
+      setStatuses(new Map());
+      taskTimings.clear();
       return;
     }
     try {
@@ -29,6 +38,7 @@ export function useSubagentSessions(api: TuiPluginApi, parentSessionId: () => st
     } catch {
       if (generation === refreshGeneration && parentID === parentSessionId()) {
         setSessions([]);
+        taskTimings.clear();
       }
     }
   };
@@ -39,24 +49,29 @@ export function useSubagentSessions(api: TuiPluginApi, parentSessionId: () => st
     const timer = setInterval(() => setNow(Date.now()), 1000);
     const unsubs = [
       api.event.on("session.created", (event) => {
-        if (event.properties.info.parentID === parentSessionId()) void refresh();
+        if (isCurrentDirectChild(event.properties.sessionID, event.properties.info.parentID)) void refresh();
       }),
       api.event.on("session.updated", (event) => {
-        if (event.properties.info.parentID === parentSessionId()) void refresh();
+        if (isCurrentDirectChild(event.properties.sessionID, event.properties.info.parentID)) void refresh();
       }),
       api.event.on("session.deleted", (event) => {
+        const isCurrentChild = isCurrentDirectChild(event.properties.sessionID, event.properties.info.parentID);
         setSessions((current) => current.filter((session) => session.id !== event.properties.sessionID));
         setStatuses((current) => {
           const next = new Map(current);
           next.delete(event.properties.sessionID);
           return next;
         });
+        taskTimings.delete(event.properties.sessionID);
+        if (isCurrentChild) void refresh();
       }),
       api.event.on("session.status", (event) => {
         applyStatus(event.properties.sessionID, event.properties.status);
+        if (isCurrentDirectChild(event.properties.sessionID)) void refresh();
       }),
       api.event.on("session.idle", (event) => {
         applyStatus(event.properties.sessionID, { type: "idle" });
+        if (isCurrentDirectChild(event.properties.sessionID)) void refresh();
       }),
     ];
     onCleanup(() => {
@@ -73,20 +88,33 @@ export function useSubagentSessions(api: TuiPluginApi, parentSessionId: () => st
 
   const subagents = createMemo<SubagentItemData[]>(() => {
     const currentStatuses = statuses();
-    return sessions()
+    const currentNow = now();
+    const parentID = parentSessionId();
+    const currentSessions = parentID ? directChildren(sessions(), parentID) : [];
+    const currentSessionIDs = new Set(currentSessions.map((session) => session.id));
+    for (const sessionID of taskTimings.keys()) {
+      if (!currentSessionIDs.has(sessionID)) taskTimings.delete(sessionID);
+    }
+
+    return currentSessions
       .map((session) => {
         const status = currentStatuses.get(session.id)?.type ?? api.state.session.status(session.id)?.type ?? "idle";
-        const createdTime = session.time?.created ?? now();
+        const createdTime = session.time?.created ?? currentNow;
         const updatedTime = session.time?.updated ?? createdTime;
+        const title = formatTaskTitle(session.title || session.id);
+        const timing = taskTimingForTitle(taskTimings.get(session.id), title, status, createdTime, currentNow);
+        taskTimings.set(session.id, timing);
         return {
           id: session.id,
           parentID: session.parentID,
-          title: session.title || session.id,
+          title,
           agent: session.agent,
           status,
           createdTime,
           updatedTime,
-          elapsedMs: durationForSession(session, status, now()),
+          elapsedMs: isActiveSessionStatus(status)
+            ? Math.max(0, currentNow - timing.startTime)
+            : durationForSession(session, status, currentNow),
         };
       })
       .filter((item) => isActiveSessionStatus(item.status))
