@@ -1,6 +1,6 @@
 {
   "name": "@yueby/opencode-subagent-sidebar",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "OpenCode TUI plugin for viewing direct child sessions",
   "keywords": [
     "opencode",
@@ -12,7 +12,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Yueby/opencode-subagent-sidebar.git"
+    "url": "git+https://github.com/Yueby/opencode-subagent-sidebar.git"
   },
   "bugs": {
     "url": "https://github.com/Yueby/opencode-subagent-sidebar/issues"
@@ -34,7 +34,9 @@
       "types": "./dist/tui.d.ts"
     }
   },
-  "oc-plugin": ["tui"],
+  "oc-plugin": [
+    "tui"
+  ],
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "bun scripts/build.ts",

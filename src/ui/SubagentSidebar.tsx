@@ -32,7 +32,6 @@ export function SubagentSidebar(props: SubagentSidebarProps): JSX.Element {
             />
           )}
         </For>
-        <text fg={theme().textMuted}>Open a row from the command palette: “Open subagent …”</text>
       </Show>
     </box>
   );
