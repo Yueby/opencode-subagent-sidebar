@@ -4,12 +4,47 @@ import type { TuiPluginApi } from "@opencode-ai/plugin/tui";
 import type { SubagentItemData } from "./types.js";
 import { directChildren, durationForSession, formatTaskTitle, isActiveSessionStatus, taskTimingForTitle } from "./utils.js";
 
+function extractLatestUserMessageText(response: unknown): string | undefined {
+  if (!response || typeof response !== "object") return undefined;
+
+  const data = (response as { data?: unknown }).data;
+  if (!Array.isArray(data)) return undefined;
+
+  for (let index = data.length - 1; index >= 0; index--) {
+    const entry = data[index];
+    if (!entry || typeof entry !== "object") continue;
+
+    const info = (entry as { info?: unknown }).info;
+    if (!info || typeof info !== "object" || (info as { role?: unknown }).role !== "user") continue;
+
+    const parts = (entry as { parts?: unknown }).parts;
+    if (!Array.isArray(parts)) continue;
+
+    const text = parts
+      .filter((part): part is { type: "text"; text: string; synthetic?: boolean } => {
+        if (!part || typeof part !== "object") return false;
+        const value = part as { type?: unknown; text?: unknown; synthetic?: unknown };
+        return value.type === "text" && typeof value.text === "string" && value.synthetic !== true;
+      })
+      .map((part) => part.text.trim())
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+
+    if (text) return text;
+  }
+
+  return undefined;
+}
+
 export function useSubagentSessions(api: TuiPluginApi, parentSessionId: () => string) {
   const [sessions, setSessions] = createSignal<Session[]>([]);
   const [statuses, setStatuses] = createSignal(new Map<string, SessionStatus>());
+  const [messageLabels, setMessageLabels] = createSignal(new Map<string, string>());
   const [now, setNow] = createSignal(Date.now());
   const taskTimings = new Map<string, { title: string; startTime: number }>();
   let refreshGeneration = 0;
+  let labelsParentID = "";
 
   const applyStatus = (sessionID: string, status: SessionStatus) => {
     setStatuses((current) => new Map(current).set(sessionID, status));
@@ -24,6 +59,10 @@ export function useSubagentSessions(api: TuiPluginApi, parentSessionId: () => st
   const refresh = async () => {
     const parentID = parentSessionId();
     const generation = ++refreshGeneration;
+    if (parentID !== labelsParentID) {
+      labelsParentID = parentID;
+      setMessageLabels(new Map());
+    }
     if (!parentID) {
       setSessions([]);
       setStatuses(new Map());
@@ -32,12 +71,27 @@ export function useSubagentSessions(api: TuiPluginApi, parentSessionId: () => st
     }
     try {
       const result = await api.client.session.children({ sessionID: parentID });
+      const children = directChildren(result.data ?? [], parentID);
+      const labels = new Map<string, string>();
+      await Promise.all(
+        children.map(async (child) => {
+          try {
+            const messages = await api.client.session.messages({ sessionID: child.id });
+            const text = extractLatestUserMessageText(messages);
+            if (text) labels.set(child.id, text);
+          } catch {
+            // A missing message must not prevent the other children from refreshing.
+          }
+        }),
+      );
       if (generation === refreshGeneration && parentID === parentSessionId()) {
-        setSessions(result.data ?? []);
+        setSessions(children);
+        setMessageLabels(labels);
       }
     } catch {
       if (generation === refreshGeneration && parentID === parentSessionId()) {
         setSessions([]);
+        setMessageLabels(new Map());
         taskTimings.clear();
       }
     }
@@ -58,6 +112,11 @@ export function useSubagentSessions(api: TuiPluginApi, parentSessionId: () => st
         const isCurrentChild = isCurrentDirectChild(event.properties.sessionID, event.properties.info.parentID);
         setSessions((current) => current.filter((session) => session.id !== event.properties.sessionID));
         setStatuses((current) => {
+          const next = new Map(current);
+          next.delete(event.properties.sessionID);
+          return next;
+        });
+        setMessageLabels((current) => {
           const next = new Map(current);
           next.delete(event.properties.sessionID);
           return next;
@@ -101,7 +160,7 @@ export function useSubagentSessions(api: TuiPluginApi, parentSessionId: () => st
         const status = currentStatuses.get(session.id)?.type ?? api.state.session.status(session.id)?.type ?? "idle";
         const createdTime = session.time?.created ?? currentNow;
         const updatedTime = session.time?.updated ?? createdTime;
-        const title = formatTaskTitle(session.title || session.id);
+        const title = formatTaskTitle(messageLabels().get(session.id) || session.title || session.id);
         const timing = taskTimingForTitle(taskTimings.get(session.id), title, status, createdTime, currentNow);
         taskTimings.set(session.id, timing);
         return {
