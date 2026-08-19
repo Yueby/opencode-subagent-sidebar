@@ -2,40 +2,7 @@ import { createEffect, createMemo, createSignal, onCleanup, onMount } from "soli
 import type { Session, SessionStatus } from "@opencode-ai/sdk/v2";
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui";
 import type { SubagentItemData } from "./types.js";
-import { directChildren, durationForSession, formatTaskTitle, isActiveSessionStatus, taskTimingForTitle } from "./utils.js";
-
-function extractLatestUserMessageText(response: unknown): string | undefined {
-  if (!response || typeof response !== "object") return undefined;
-
-  const data = (response as { data?: unknown }).data;
-  if (!Array.isArray(data)) return undefined;
-
-  for (let index = data.length - 1; index >= 0; index--) {
-    const entry = data[index];
-    if (!entry || typeof entry !== "object") continue;
-
-    const info = (entry as { info?: unknown }).info;
-    if (!info || typeof info !== "object" || (info as { role?: unknown }).role !== "user") continue;
-
-    const parts = (entry as { parts?: unknown }).parts;
-    if (!Array.isArray(parts)) continue;
-
-    const text = parts
-      .filter((part): part is { type: "text"; text: string; synthetic?: boolean } => {
-        if (!part || typeof part !== "object") return false;
-        const value = part as { type?: unknown; text?: unknown; synthetic?: unknown };
-        return value.type === "text" && typeof value.text === "string" && value.synthetic !== true;
-      })
-      .map((part) => part.text.trim())
-      .filter(Boolean)
-      .join("\n")
-      .trim();
-
-    if (text) return text;
-  }
-
-  return undefined;
-}
+import { directChildren, durationForSession, formatTaskTitle, isActiveSessionStatus, latestTaskLabels, taskTimingForTitle } from "./utils.js";
 
 export function useSubagentSessions(api: TuiPluginApi, parentSessionId: () => string) {
   const [sessions, setSessions] = createSignal<Session[]>([]);
@@ -44,6 +11,7 @@ export function useSubagentSessions(api: TuiPluginApi, parentSessionId: () => st
   const [now, setNow] = createSignal(Date.now());
   const taskTimings = new Map<string, { title: string; startTime: number }>();
   let refreshGeneration = 0;
+  let refreshTimer: ReturnType<typeof setTimeout> | undefined;
   let labelsParentID = "";
 
   const applyStatus = (sessionID: string, status: SessionStatus) => {
@@ -54,6 +22,12 @@ export function useSubagentSessions(api: TuiPluginApi, parentSessionId: () => st
     const parentID = parentSessionId();
     if (!parentID) return false;
     return eventParentID === parentID || sessions().some((session) => session.id === sessionID && session.parentID === parentID);
+  };
+
+  const taskLabels = (parentID: string, children: readonly Session[]) => {
+    const childIDs = new Set(children.map((child) => child.id));
+    const parts = api.state.session.messages(parentID).flatMap((message) => api.state.part(message.id));
+    return new Map([...latestTaskLabels(parts)].filter(([sessionID]) => childIDs.has(sessionID)));
   };
 
   const refresh = async () => {
@@ -72,21 +46,9 @@ export function useSubagentSessions(api: TuiPluginApi, parentSessionId: () => st
     try {
       const result = await api.client.session.children({ sessionID: parentID });
       const children = directChildren(result.data ?? [], parentID);
-      const labels = new Map<string, string>();
-      await Promise.all(
-        children.map(async (child) => {
-          try {
-            const messages = await api.client.session.messages({ sessionID: child.id });
-            const text = extractLatestUserMessageText(messages);
-            if (text) labels.set(child.id, text);
-          } catch {
-            // A missing message must not prevent the other children from refreshing.
-          }
-        }),
-      );
       if (generation === refreshGeneration && parentID === parentSessionId()) {
         setSessions(children);
-        setMessageLabels(labels);
+        setMessageLabels(taskLabels(parentID, children));
       }
     } catch {
       if (generation === refreshGeneration && parentID === parentSessionId()) {
@@ -97,19 +59,30 @@ export function useSubagentSessions(api: TuiPluginApi, parentSessionId: () => st
     }
   };
 
+  const scheduleRefresh = () => {
+    if (refreshTimer) clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(() => {
+      refreshTimer = undefined;
+      void refresh();
+    }, 200);
+  };
+
   const navigate = (sessionID: string) => api.route.navigate("session", { sessionID });
 
   onMount(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);
     const unsubs = [
       api.event.on("session.created", (event) => {
-        if (isCurrentDirectChild(event.properties.sessionID, event.properties.info.parentID)) void refresh();
-      }),
-      api.event.on("session.updated", (event) => {
-        if (isCurrentDirectChild(event.properties.sessionID, event.properties.info.parentID)) void refresh();
+        if (isCurrentDirectChild(event.properties.sessionID, event.properties.info.parentID)) scheduleRefresh();
       }),
       api.event.on("session.deleted", (event) => {
-        const isCurrentChild = isCurrentDirectChild(event.properties.sessionID, event.properties.info.parentID);
+        if (event.properties.sessionID === parentSessionId()) {
+          setSessions([]);
+          setStatuses(new Map());
+          setMessageLabels(new Map());
+          taskTimings.clear();
+          return;
+        }
         setSessions((current) => current.filter((session) => session.id !== event.properties.sessionID));
         setStatuses((current) => {
           const next = new Map(current);
@@ -122,19 +95,23 @@ export function useSubagentSessions(api: TuiPluginApi, parentSessionId: () => st
           return next;
         });
         taskTimings.delete(event.properties.sessionID);
-        if (isCurrentChild) void refresh();
       }),
       api.event.on("session.status", (event) => {
         applyStatus(event.properties.sessionID, event.properties.status);
-        if (isCurrentDirectChild(event.properties.sessionID)) void refresh();
       }),
       api.event.on("session.idle", (event) => {
         applyStatus(event.properties.sessionID, { type: "idle" });
-        if (isCurrentDirectChild(event.properties.sessionID)) void refresh();
+      }),
+      api.event.on("message.part.updated", (event) => {
+        const parentID = parentSessionId();
+        if (parentID && event.properties.sessionID === parentID && event.properties.part.type === "tool" && event.properties.part.tool === "task") {
+          setMessageLabels(taskLabels(parentID, directChildren(sessions(), parentID)));
+        }
       }),
     ];
     onCleanup(() => {
       clearInterval(timer);
+      if (refreshTimer) clearTimeout(refreshTimer);
       unsubs.forEach((unsubscribe) => unsubscribe());
       refreshGeneration++;
     });
@@ -142,7 +119,26 @@ export function useSubagentSessions(api: TuiPluginApi, parentSessionId: () => st
 
   createEffect(() => {
     parentSessionId();
+    if (refreshTimer) {
+      clearTimeout(refreshTimer);
+      refreshTimer = undefined;
+    }
     void refresh();
+  });
+
+  const commandItems = createMemo(() => {
+    const parentID = parentSessionId();
+    const currentStatuses = statuses();
+    const labels = messageLabels();
+    if (!parentID) return [];
+
+    return directChildren(sessions(), parentID)
+      .map((session) => ({
+        id: session.id,
+        title: formatTaskTitle(labels.get(session.id) || session.title || session.id),
+        status: currentStatuses.get(session.id)?.type ?? api.state.session.status(session.id)?.type ?? "idle",
+      }))
+      .filter((session) => isActiveSessionStatus(session.status));
   });
 
   const subagents = createMemo<SubagentItemData[]>(() => {
@@ -181,7 +177,7 @@ export function useSubagentSessions(api: TuiPluginApi, parentSessionId: () => st
   });
 
   createEffect(() => {
-    const commands = subagents().map((item, index) => ({
+    const commands = commandItems().map((item, index) => ({
       name: `subagent.open.${item.id}`,
       title: `Open subagent ${index + 1}: ${item.title}`,
       category: "Subagents",

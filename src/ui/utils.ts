@@ -131,6 +131,40 @@ export function formatTaskTitle(title: string): string {
   return title.replace(/\s+\(@[^\s()]+\s+subagent\)$/, "");
 }
 
+export function latestTaskLabels(parts: readonly unknown[]): Map<string, string> {
+  const labels = new Map<string, { label: string; startTime: number }>();
+
+  for (const part of parts) {
+    if (!part || typeof part !== "object") continue;
+    const value = part as {
+      type?: unknown;
+      tool?: unknown;
+      state?: {
+        input?: { description?: unknown };
+        title?: unknown;
+        metadata?: { sessionId?: unknown };
+        time?: { start?: unknown };
+      };
+    };
+    if (value.type !== "tool" || value.tool !== "task" || !value.state) continue;
+
+    const sessionID = value.state.metadata?.sessionId;
+    const startTime = value.state.time?.start;
+    const description = value.state.input?.description;
+    const title = typeof description === "string" && description.trim()
+      ? description.trim()
+      : typeof value.state.title === "string" && value.state.title.trim()
+        ? value.state.title.trim()
+        : undefined;
+    if (typeof sessionID !== "string" || !sessionID || typeof startTime !== "number" || !title) continue;
+
+    const previous = labels.get(sessionID);
+    if (!previous || startTime >= previous.startTime) labels.set(sessionID, { label: title, startTime });
+  }
+
+  return new Map([...labels].map(([sessionID, value]) => [sessionID, value.label]));
+}
+
 /**
  * Returns color token for session status dot matching OpenCode MCP sidebar conventions.
  */

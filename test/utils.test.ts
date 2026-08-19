@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Session } from "@opencode-ai/sdk/v2";
-import { directChildren, durationForSession, formatDuration, formatTaskTitle, getContrastForeground, getStatusDotColor, getStatusLabel, isActiveSessionStatus, taskTimingForTitle } from "../src/ui/utils.js";
+import { directChildren, durationForSession, formatDuration, formatTaskTitle, getContrastForeground, getStatusDotColor, getStatusLabel, isActiveSessionStatus, latestTaskLabels, taskTimingForTitle } from "../src/ui/utils.js";
 
 const session = (id: string, parentID?: string): Pick<Session, "id" | "parentID"> => ({ id, parentID });
 
@@ -76,6 +76,27 @@ describe("subagent helpers", () => {
       expect(formatTaskTitle("Fix issue (v2.0)")).toBe("Fix issue (v2.0)");
       expect(formatTaskTitle("Search for (@something else)")).toBe("Search for (@something else)");
       expect(formatTaskTitle("Plain title")).toBe("Plain title");
+    });
+  });
+
+  describe("latestTaskLabels", () => {
+    test("uses task descriptions and ranks child reuse by latest start time", () => {
+      expect(
+        latestTaskLabels([
+          { type: "tool", tool: "task", state: { input: { description: "First task" }, metadata: { sessionId: "child" }, time: { start: 1 } } },
+          { type: "tool", tool: "task", state: { input: { description: "Reused task" }, metadata: { sessionId: "child" }, time: { start: 2 } } },
+        ]),
+      ).toEqual(new Map([["child", "Reused task"]]));
+    });
+
+    test("falls back to state title and ignores malformed or unrelated parts", () => {
+      expect(
+        latestTaskLabels([
+          { type: "tool", tool: "task", state: { input: {}, title: "Fallback task", metadata: { sessionId: "child" }, time: { start: 1 } } },
+          { type: "tool", tool: "bash", state: { input: { description: "Ignore" }, metadata: { sessionId: "other" }, time: { start: 2 } } },
+          { type: "tool", tool: "task", state: { input: { description: "Ignore" }, metadata: {}, time: { start: 3 } } },
+        ]),
+      ).toEqual(new Map([["child", "Fallback task"]]));
     });
   });
 
